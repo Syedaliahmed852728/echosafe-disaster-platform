@@ -1,0 +1,79 @@
+# Hailstorm Risk Classifier Configuration (surface-variable + SMOTE build)
+#
+# Production model: Logistic Regression on a SMOTE-balanced training set
+# (imblearn pipeline: SMOTE -> StandardScaler -> LogisticRegression).
+#
+# Why this combination
+# --------------------
+# Hail in Pakistan ASOS is *extremely* rare — only 11 GR/GS days across 10
+# years of records (~0.025% positive rate). Tree models (Random Forest,
+# Gradient Boosting) collapse under that imbalance even with
+# class_weight='balanced'. The Evidence/hailstorm_risk_ML.ipynb sandbox swept
+# six resampling strategies (none, SMOTE, BorderlineSMOTE, ADASYN,
+# RandomOverSampler, RandomUnderSampler, SMOTETomek, SMOTEENN, SMOTE+Under)
+# crossed with LogReg / RF / GBM. Headline result:
+#
+#   sampler          model        roc_auc   avg_precision  rec+ (t=0.5)
+#   SMOTE            LogReg       0.9424    0.0210         0.80   <-- chosen
+#   ADASYN           LogReg       0.9421    0.0210         0.80
+#   SMOTETomek       LogReg       0.9424    0.0210         0.80
+#   none (balanced)  LogReg       0.9460    0.0157         0.80
+#   none (balanced)  RF           0.5761    0.0026         0.00
+#   none (balanced)  GBM          0.7812    0.0071         0.00
+#
+# SMOTE wins on average precision while preserving the 0.94 ROC AUC and the
+# 0.80 positive-class recall. Resamplers do not invent information beyond the
+# few real positives, so the absolute precision ceiling is governed by the
+# base rate — that is a data limit, not a model limit. The notebook also
+# sweeps the decision threshold so the operating point can be set by domain
+# need (high-recall early-warning vs. high-precision verification).
+#
+# Resampling is applied *only* during fit via imblearn.pipeline.Pipeline; the
+# test set is scored on its real distribution.
+
+model:
+  type: LogisticRegression
+  max_iter: 2000
+  class_weight: balanced
+  C: 1.0
+  random_state: 42
+
+resampler:
+  type: SMOTE
+  random_state: 42
+  k_neighbors: 5
+  sampling_strategy: auto  # 1:1 minority:majority on the train fold
+
+features:
+  - temperature_max_c
+  - temperature_min_c
+  - dew_point_mean_c
+  - rh_min_pct
+  - rh_mean_pct
+  - wind_speed_mean_ms
+  - wind_gust_max_ms
+  - surface_pressure_min_hpa
+  - surface_pressure_drop_hpa
+  - precipitation_sum_mm
+  - cloud_cover_mean_pct
+  - thunder_hours
+  - month
+  - is_premonsoon
+
+target: hail_observed
+
+training:
+  test_size_fraction: 0.2
+  validation_fraction: 0.2   # last 20% of the training years used to tune the threshold
+  random_state: 42
+  decision_threshold: auto   # picked from validation PR curve (F1-optimal)
+  fallback_threshold: 0.5
+
+evaluation:
+  metrics:
+    - roc_auc
+    - average_precision
+    - f1
+    - precision
+    - recall
+  report_path: reports/hailstorm_risk_evaluation.json

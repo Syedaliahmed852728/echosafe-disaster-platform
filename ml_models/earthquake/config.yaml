@@ -1,0 +1,42 @@
+# Earthquake Magnitude Estimator Configuration
+#
+# Production model: Linear Regression (pipeline: StandardScaler -> LinearRegression).
+#
+# Selection justification: see Evidence/Earthquake_Magnitude_Model_Selection.ipynb
+# at the project root. On the EchoSafe scraped USGS dataset (Pakistan + neighbouring
+# seismic zones, ~6.4k events) the three candidate regressors produced:
+#
+#   Model                  MSE       MAE       R^2
+#   LinearRegression       0.12171   0.23912   0.04576   <-- chosen
+#   SVR_rbf                0.12975   0.23913  -0.01724
+#   RandomForestRegressor  0.12619   0.24528   0.01070
+#
+# Linear Regression wins on MSE and R^2 on this dataset, so it is the production
+# choice even though the external SOCR project reported Random Forest as best on
+# their California-only dataset. The notebook is the reproducible evidence.
+
+model:
+  type: LinearRegression
+  fit_intercept: true
+
+features:
+  - latitude
+  - longitude
+  - depth_km
+  - is_shallow
+  - year
+  - month
+
+target: magnitude
+
+training:
+  # Time-based split (no random leakage). Years are inferred from event_time.
+  test_size_fraction: 0.2
+  random_state: 42
+
+evaluation:
+  metrics:
+    - mse
+    - mae
+    - r2
+  report_path: reports/earthquake_magnitude_evaluation.json
