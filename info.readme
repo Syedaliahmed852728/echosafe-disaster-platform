@@ -1,0 +1,279 @@
+# EchoSafe — Data Sources and Model Choices
+
+This file documents two things about the EchoSafe disaster-intelligence
+platform:
+
+1. **Where the data for each module comes from** and how it is fetched.
+2. **Which model the project trains for each module, and why we picked it.**
+
+Everything below describes what is actually wired in code — not aspirational
+future work. File paths refer to the project root.
+
+The whole project targets a rolling **`SETTINGS.pipeline.lookback_years`**
+window (default 10 years, override with the `ECHOSAFE_LOOKBACK_YEARS` env var).
+Every download and transform stage reuses what is already on disk and only
+fetches / processes the missing date windows.
+
+---
+
+## 1. Data Sources
+
+The platform follows a medallion architecture for every module:
+
+```
+Internet sources  ─▶  data/bronze/   ─▶  data/silver/   ─▶  data/gold/
+   (raw API/scrape)   (raw JSON)         (cleaned CSV)      (ML-ready CSV)
+```
+
+Each module pulls from real, publicly accessible scientific data sources —
+no synthetic or fabricated rows are used in training.
+
+### 1.1 Earthquake module
+
+- **Source:** United States Geological Survey (USGS) FDSN earthquake
+  catalogue, via the public search form at
+  `https://earthquake.usgs.gov/earthquakes/search/` and its backing endpoint
+  `https://earthquake.usgs.gov/fdsnws/event/1/query`.
+- **Client code:** `backend/pipelines/utils/earthquake_client.py`.
+- **How it is fetched:**
+  - The client first scrapes the search page with `bs4` to verify the form
+    field names match what we send, then issues a GET to the FDSN endpoint
+    with a randomised `fake-useragent` header pool. This is the on-the-wire
+    equivalent of the user clicking the form's "Search" button.
+  - The query parameters are: format CSV, custom date range
+    `[today - lookback_years, today]`, minimum magnitude **3.0**, and a
+    Pakistan bounding box of `lat 23.5..37.5, lon 60.5..77.5`.
+  - USGS returns HTTP 400 for any single request that would exceed 20,000
+    events. The client splits the window into 1-year chunks and recursively
+    halves any chunk that returns near the 20,000 cap, so it always stays
+    inside the limit.
+  - Incremental: before scraping, the client reads the existing bronze JSON
+    (or the `earthquake_events` table when the DB is reachable) and only
+    fetches the head/tail gaps needed to cover the target window.
+- **Bronze output:** `data/bronze/earthquake/earthquake_events_raw.json`
+  with per-event records: `event_id`, `event_time` (ms epoch), `latitude`,
+  `longitude`, `magnitude`, `depth_km`, `place`, `source_type`.
+- **Silver / gold:** the bronze JSON is cleaned (drop missing keys, dedupe by
+  `event_id`, attach nearest Pakistani region by Haversine distance, flag
+  events inside the Pakistan bbox) and then enriched with calendar features
+  + a rule-based severity label
+  (`backend/ml_models/earthquake/severity_classifier.py`).
+
+### 1.2 Heatwave module
+
+- **Sources (two endpoints, stitched together):**
+  - **NASA POWER daily archive** (`https://power.larc.nasa.gov/api/temporal/daily/point`)
+    is the primary source for the historical training window. Open-Meteo's
+    free archive rate-limits the multi-region multi-year requests this
+    pipeline needs, and NASA POWER has no API key and a generous quota.
+  - **Open-Meteo Forecast API** (`https://api.open-meteo.com/v1/forecast`,
+    `past_days` slice) bridges NASA POWER's 2–3 day reanalysis lag and
+    supplies the operational live forecast that the predictor uses.
+- **Client code:** `backend/pipelines/utils/heatwave_client.py`.
+- **Variables pulled per (region, day):**
+  `temperature_2m_max`, `temperature_2m_min`, `temperature_2m_mean`,
+  `apparent_temperature_max`, `shortwave_radiation_sum`, `wind_speed_10m_max`,
+  `precipitation_sum`, `et0_fao_evapotranspiration`, `rh_2m_mean_pct`.
+- **How it is fetched:**
+  - The client iterates the canonical region list at
+    `data/reference/master_regions.csv` (Pakistani master regions:
+    Islamabad, Rawalpindi, Lahore, Karachi, Peshawar, Quetta, Multan,
+    Sukkur, Gilgit, Muzaffarabad).
+  - Each region has its own cached fragment at
+    `data/bronze/heatwave/_fragments/<region>.json`. On every run the
+    client reads the fragment's existing date window, computes head/tail
+    gaps against the target window, and only requests those gaps from
+    NASA POWER. The recent tail is filled from the Open-Meteo forecast
+    endpoint so today's row is always present.
+  - Apparent temperature is derived using the Steadman approximation when
+    NASA POWER doesn't supply it natively.
+- **Bronze output:** `data/bronze/heatwave/heatwave_daily_raw.json`.
+- **Silver / gold:** the silver layer attaches a per-region, per-day-of-year
+  climatology (smoothed 7-day pooled `tmax_normal` and `tmax_p90`); the gold
+  layer adds rolling means, dry-day streak, monsoon flag, and the PMD-style
+  heatwave label (Tmax ≥ day-of-year normal + 5 °C for ≥ 5 consecutive days).
+
+### 1.3 Hailstorm module
+
+- **Sources (two endpoints, stitched together):**
+  - **Iowa Environmental Mesonet (IEM) ASOS archive** — network `PK__ASOS`
+    at `https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py`. The
+    METAR `wxcodes` field encodes observed hail with the tags **GR**
+    (hail ≥ 5 mm) and **GS** (small hail / graupel). These are our
+    ground-truth positive labels.
+  - **Open-Meteo ERA5 archive** (`https://archive-api.open-meteo.com/v1/archive`)
+    supplies the surface hourly profile the predictor uses as features.
+    Pressure-level CAPE / freezing-level fields are not available for
+    Pakistan on the free tier, so we use surface proxies: `temperature_2m`,
+    `relative_humidity_2m`, `dew_point_2m`, `wind_speed_10m`,
+    `wind_direction_10m`, `wind_gusts_10m`, `surface_pressure`,
+    `precipitation`, `rain`, `snowfall`, `weather_code`, `cloud_cover`. The
+    WMO weather codes 95 / 96 / 99 (thunder, thunder with hail) act as an
+    additional convective signal.
+- **Client code:** `backend/pipelines/utils/hailstorm_client.py`.
+- **How it is fetched:**
+  - The station list is pulled live from the IEM PK\_\_ASOS GeoJSON, so the
+    network membership stays in sync with the source.
+  - For every station the client reads the existing bronze JSON, finds the
+    min/max `event_time` already present for that station, and only fetches
+    the missing tail (or head, if the user widened the lookback window).
+    Both endpoints — IEM METARs and Open-Meteo ERA5 — are queried with the
+    same gap windows.
+  - Hourly rows are deduped by `(station, event_time)`; hail observations
+    are deduped by `(icao, event_time, wxcodes)`.
+- **Bronze output:** `data/bronze/hailstorm/hailstorm_events_raw.json`,
+  containing the station list, observed hail events, and the hourly surface
+  feature rows.
+- **Silver / gold:** the silver layer aggregates hourly rows into one row
+  per (station, day) with daily Tmax/Tmin, mean/min humidity, mean wind +
+  max gust, surface-pressure min/drop, precipitation sums, thunder hours,
+  and the binary `hail_observed` label. The gold layer adds calendar /
+  seasonality features and a rule-based severity label.
+
+### 1.4 Live operational data (dashboard)
+
+In addition to the historical training pipeline, the dashboard talks to two
+live endpoints when the user requests an on-demand forecast:
+
+- **Open-Meteo Forecast API** for current-day and 14-day forecasts of every
+  variable above.
+- **Open-Meteo and Nominatim Geocoding APIs** for the user-typed city lookup
+  on the Home / per-module pages.
+- **`backend/services/batch_predictions.py`** is the multi-region equivalent
+  used to refresh `predictions/batch/latest_disaster_predictions.csv` and
+  `predictions/alerts/latest_alerts.csv` for the regional map and the
+  alerts queue.
+
+### 1.5 Reference data
+
+- `data/reference/master_regions.csv` — canonical region table
+  (`region`, `province`, `latitude`, `longitude`). Every module joins to
+  this so all three layers share one geographic frame.
+
+---
+
+## 2. Model Choices and Rationale
+
+EchoSafe trains one model per disaster module. The selection for every
+module was made empirically on a held-out time split — the chosen model is
+the one that performed best on real out-of-sample data, not the most
+fashionable model.
+
+### 2.1 Earthquake — Magnitude Regressor
+
+- **Final model:** `LinearRegression` inside a `StandardScaler →
+  LinearRegression` sklearn pipeline.
+- **Artifact:** `models/earthquake_magnitude/earthquake_magnitude_model.pkl`
+  (metadata in the matching `*_metadata.json`).
+- **Features (6):** `latitude`, `longitude`, `depth_km`, `is_shallow`,
+  `year`, `month`. From `data/gold/earthquake_risk/earthquake_risk_dataset.csv`.
+- **Target:** `magnitude` (continuous).
+- **Split:** time-based — train on events up to end of 2023, test from
+  2024 onwards (`n_train=1898`, `n_test=642`).
+- **Test metrics:** MSE 0.122, MAE 0.235, R² 0.048.
+- **Why this model:**
+  - Selection was done in
+    `evidence/Earthquake_Magnitude_Model_Selection.ipynb`. The notebook
+    compared linear regression against an RBF-kernel `SVR` and a
+    `RandomForestRegressor` on the same time split.
+  - The features that actually predict magnitude in our window —
+    coordinates, depth, shallow flag, year/month — explain only a small
+    fraction of the variance (Pakistan magnitudes are concentrated in a
+    narrow M3.0–M5.5 band). On that signal, the more flexible models
+    overfit the training period without producing a better MAE in the
+    2024+ window.
+  - We therefore kept the simplest, most transparent estimator: a
+    standardised linear regression whose coefficients are inspectable in
+    the metadata file. The earthquake page in the dashboard is honest
+    about this — it does *severity classification of detected events*,
+    not earthquake occurrence prediction.
+
+### 2.2 Heatwave — Heatwave-Day Binary Classifier
+
+- **Final model:** `LogisticRegression` (balanced class weights) inside a
+  `SMOTE → StandardScaler → LogisticRegression` `imblearn` pipeline.
+- **Artifact:** `models/heatwave_risk/heatwave_risk_model.pkl`.
+- **Features (17):** the eight daily weather variables, plus the engineered
+  features `tmax_anomaly`, `tmin_anomaly`, `tmax_roll3`, `tmax_roll7`,
+  `diurnal_range_c`, `dry_streak`, `day_of_year`, `month`, `is_premonsoon`.
+- **Target:** `is_heatwave` — PMD rule, Tmax ≥ day-of-year normal + 5 °C
+  for ≥ 5 consecutive days.
+- **Split:** time-based — train through 2022, test from 2023 onwards
+  (`n_train=37,984`, `n_test=10,086`, positive rate ≈ 1.3 %).
+- **Test metrics:** ROC-AUC **0.994**, average precision 0.737, F1 0.561,
+  precision 0.392, recall **0.989** at decision threshold 0.5432.
+- **Why this model:**
+  - Selection evidence is in `evidence/heatwave_risk_ML.ipynb`. The
+    notebook benchmarked Logistic Regression against
+    `RandomForestClassifier` and `GradientBoostingClassifier`, and
+    benchmarked SMOTE against `SMOTETomek` and `SMOTEENN`.
+  - The training data is severely imbalanced (≈ 1 in 80 region-days is a
+    heatwave day) and the operating cost of missing a heatwave is much
+    higher than calling a false alarm, so the model is tuned to maximise
+    recall while keeping ROC-AUC above 0.99. SMOTE oversamples the rare
+    positive class so the linear decision boundary doesn't collapse onto
+    the majority class.
+  - Logistic Regression won because its coefficients are publishable
+    (Tmax, Tmax anomaly, and the rolling Tmax means dominate) and its
+    calibrated probabilities give us a meaningful threshold we can tune
+    (0.5432) to deliver the 98.9 % recall the application needs. The tree
+    ensembles produced comparable AUC but worse calibration and offered
+    no operational benefit for the cost.
+
+### 2.3 Hailstorm — Hail-Day Binary Classifier
+
+- **Final model:** `LogisticRegression` (balanced class weights) inside a
+  `SMOTE → StandardScaler → LogisticRegression` `imblearn` pipeline.
+- **Artifact:** `models/hailstorm_risk/hailstorm_risk_model.pkl`.
+- **Features (14):** `temperature_max_c`, `temperature_min_c`,
+  `dew_point_mean_c`, `rh_min_pct`, `rh_mean_pct`, `wind_speed_mean_ms`,
+  `wind_gust_max_ms`, `surface_pressure_min_hpa`,
+  `surface_pressure_drop_hpa`, `precipitation_sum_mm`,
+  `cloud_cover_mean_pct`, `thunder_hours`, `month`, `is_premonsoon`.
+- **Target:** `hail_observed` (1 if any METAR within the day reported GR/GS).
+- **Split:** time-based — train through 2023, test from 2024 onwards
+  (`n_train=33,024`, `n_test=10,788`, positive rate ≈ **0.02 %**).
+- **Test metrics:** ROC-AUC **0.881**, recall **0.80** at decision
+  threshold 0.05 (precision and average precision are low because the
+  positive class is extremely rare).
+- **Why this model:**
+  - Selection evidence is in `evidence/hailstorm_risk_ML.ipynb`. The
+    notebook tested Logistic Regression, `RandomForestClassifier`, and
+    `GradientBoostingClassifier`, and tested SMOTE against `SMOTETomek`
+    and `SMOTEENN`.
+  - This dataset is the most imbalanced of the three (≈ 1 hail day per
+    5,000 station-days). Tree ensembles tended to fit the training-period
+    weather noise around the handful of positive events and dropped on
+    the 2024 test fold. The Logistic + SMOTE pipeline kept the recall the
+    application requires (catch nearly every hail day) at the cost of
+    precision, which is the right operational trade-off for an early
+    warning system.
+  - The pipeline runs a custom decision threshold of **0.05** rather than
+    the default 0.5, because the operational task is "warn whenever the
+    hail probability rises above the base rate", not "flip a 50/50 coin".
+
+### 2.4 Cross-module rationale (why three different families)
+
+- **Earthquake** is a *regression* problem on a relatively low-signal,
+  geographically structured target, so simple/linear wins.
+- **Heatwave** and **hailstorm** are both *rare-event binary
+  classification* problems on imbalanced time series. Both ended up with
+  the same SMOTE + Logistic Regression stack because (a) it calibrates
+  well, (b) its coefficients are interpretable to a domain reviewer, and
+  (c) on the time-split test fold it beat the boosting / forest baselines
+  the notebooks tried.
+- All three models share a **time-based split** — train on the past, test
+  on the future — so the reported metrics describe real generalisation
+  rather than random-shuffle leakage.
+
+---
+
+## File pointers
+
+- Pipelines: `backend/pipelines/`
+- Data clients: `backend/pipelines/utils/`
+- Trainers: `backend/ml_models/<module>/`
+- Saved model artifacts + metadata: `models/<module>_risk/`
+- Selection notebooks: `evidence/`
+- Risk-engine wrappers used by the dashboard: `backend/risk_engine/`
+- Dashboard pages and shared UI: `dashboard/`
