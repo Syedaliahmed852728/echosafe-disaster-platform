@@ -287,3 +287,13 @@ class HeatwaveRiskPredictor:
 def predict_heatwave_risk(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Convenience function for one-shot heatwave risk scoring."""
     return HeatwaveRiskPredictor().predict(input_data)
+
+
+if __name__ == "__main__":
+    sample = {
+        "latitude": 28.2814,
+        "longitude": 68.4375,
+        "region": "Sukkur",
+    }
+    result = predict_heatwave_risk(sample)
+    print(json.dumps(result, indent=2, default=str))

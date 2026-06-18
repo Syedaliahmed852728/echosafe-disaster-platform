@@ -166,3 +166,9 @@ class EarthquakeMagnitudeTrainer(BaseTrainer):
             json.dump(self.metadata, fh, indent=2)
         logger.info(f"Magnitude model saved to {out / MODEL_FILENAME}")
         logger.info(f"Evaluation report saved to {DEFAULT_REPORT_PATH}")
+
+
+if __name__ == "__main__":
+    trainer = EarthquakeMagnitudeTrainer()
+    trainer.train()
+    trainer.save()

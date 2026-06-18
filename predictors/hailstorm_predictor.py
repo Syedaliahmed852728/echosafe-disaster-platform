@@ -174,3 +174,13 @@ class HailstormRiskPredictor:
 def predict_hailstorm_risk(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Convenience function for one-shot hailstorm risk scoring."""
     return HailstormRiskPredictor().predict(input_data)
+
+
+if __name__ == "__main__":
+    sample = {
+        "latitude": 31.5216,
+        "longitude": 74.4036,
+        "region": "Lahore",
+    }
+    result = predict_hailstorm_risk(sample)
+    print(json.dumps(result, indent=2, default=str))
