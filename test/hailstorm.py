@@ -37,14 +37,14 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from config.logger import get_logger
-from config.settings import PROJECT_ROOT
-from ml_models.hailstorm.features import HAIL_FEATURES, HAIL_TARGET
-from ml_models.hailstorm.risk_trainer import HailstormRiskTrainer, build_pipeline
-from ml_models.hailstorm.severity_classifier import classify_hail_severity
-from pipelines.bronze_to_silver_hailstorm import bronze_to_silver_hailstorm
-from pipelines.download_hailstorm_data import download_hailstorm_data  # noqa: F401
-from pipelines.silver_to_gold_hailstorm import engineer_hailstorm_features
+from backend.config.logger import get_logger
+from backend.config.settings import PROJECT_ROOT
+from backend.ml_models.hailstorm.features import HAIL_FEATURES, HAIL_TARGET
+from backend.ml_models.hailstorm.risk_trainer import HailstormRiskTrainer, build_pipeline
+from backend.ml_models.hailstorm.severity_classifier import classify_hail_severity
+from backend.pipelines.bronze_to_silver_hailstorm import bronze_to_silver_hailstorm
+from backend.pipelines.download_hailstorm_data import download_hailstorm_data  # noqa: F401
+from backend.pipelines.silver_to_gold_hailstorm import engineer_hailstorm_features
 
 logger = get_logger("test.hailstorm")
 

@@ -33,14 +33,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from config.logger import get_logger
-from config.settings import PROJECT_ROOT
-from ml_models.earthquake.features import MAGNITUDE_FEATURES, MAGNITUDE_TARGET
-from ml_models.earthquake.magnitude_trainer import EarthquakeMagnitudeTrainer
-from ml_models.earthquake.severity_classifier import classify_severity
-from pipelines.bronze_to_silver_earthquake import bronze_to_silver_earthquake
-from pipelines.download_earthquack_data import download_earthquake_data
-from pipelines.silver_to_gold_earthquake import engineer_earthquake_features
+from backend.config.logger import get_logger
+from backend.config.settings import PROJECT_ROOT
+from backend.ml_models.earthquake.features import MAGNITUDE_FEATURES, MAGNITUDE_TARGET
+from backend.ml_models.earthquake.magnitude_trainer import EarthquakeMagnitudeTrainer
+from backend.ml_models.earthquake.severity_classifier import classify_severity
+from backend.pipelines.bronze_to_silver_earthquake import bronze_to_silver_earthquake
+from backend.pipelines.download_earthquack_data import download_earthquake_data
+from backend.pipelines.silver_to_gold_earthquake import engineer_earthquake_features
 
 logger = get_logger("test.earthquake")
 

@@ -1,0 +1,16 @@
+{
+  "admin": {
+    "user_id": "u_admin_1",
+    "username": "admin",
+    "role": "admin",
+    "salt": "c04ae623b2e1eb5498ec8e548c55f8e7",
+    "hash": "cf11efcaebe303e24202640d9f4d2a4a8ae800c4e5f7e39067efb353b3a575be"
+  },
+  "analyst": {
+    "user_id": "u_analyst_1",
+    "username": "analyst",
+    "role": "analyst",
+    "salt": "ddac320e5d42e4f9ce55916582820bb9",
+    "hash": "d2a0e38610e5d3829c322cf870c27a56db83192aaedba283c738b014ccce144a"
+  }
+}

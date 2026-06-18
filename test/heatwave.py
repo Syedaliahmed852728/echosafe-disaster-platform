@@ -37,13 +37,13 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from config.logger import get_logger
-from config.settings import PROJECT_ROOT
-from ml_models.heatwave.features import HEATWAVE_FEATURES, HEATWAVE_TARGET
-from ml_models.heatwave.risk_trainer import HeatwaveRiskTrainer, build_pipeline
-from ml_models.heatwave.severity_classifier import classify_heatwave_severity
-from pipelines.bronze_to_silver_heatwave import bronze_to_silver_heatwave
-from pipelines.silver_to_gold_heatwave import engineer_heatwave_features
+from backend.config.logger import get_logger
+from backend.config.settings import PROJECT_ROOT
+from backend.ml_models.heatwave.features import HEATWAVE_FEATURES, HEATWAVE_TARGET
+from backend.ml_models.heatwave.risk_trainer import HeatwaveRiskTrainer, build_pipeline
+from backend.ml_models.heatwave.severity_classifier import classify_heatwave_severity
+from backend.pipelines.bronze_to_silver_heatwave import bronze_to_silver_heatwave
+from backend.pipelines.silver_to_gold_heatwave import engineer_heatwave_features
 
 logger = get_logger("test.heatwave")
 
